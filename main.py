@@ -15,14 +15,15 @@ from discord import Embed, Color, Game, utils, ChannelType
 from discord.ext import commands
 from data import  *
 from werkzeug.security import check_password_hash, generate_password_hash
-bot = commands.Bot(command_prefix="?")
+BOT_COMMAND_PREFIX = "?"
+bot = commands.Bot(command_prefix=BOT_COMMAND_PREFIX, help_command=None) #The help command provided is a custom one, see further below
 
 #Constants
 DEFAULT_COMMAND_COLOR = Color.dark_teal()
 DEFAULT_ERROR_COLOR = Color.red()
-BOT_TOKEN = "ODYzMDgyNzczMzc5NDE2MTE1.YOhueA.k-8mtAbwnnQWRY92OJwmfCSEs1M"
-
-#Logging
+BOT_TOKEN = os.environ["POLICEBOT_BOT_TOKEN"]
+BOT_INVITE_LINK = "https://discord.com/oauth2/authorize?client_id=863082773379416115&scope=bot&permissions=339078238" #See note above
+#Logging and logging settings
 logging.basicConfig(
     level=logging.DEBUG
 )
@@ -68,6 +69,7 @@ async def authenticate(ctx):
     #First, validate if the channel actually has a lock enabled
     guild_id = str(ctx.guild.id)
     channel_id = ctx.channel.id
+    user_id = ctx.user.id
     tracked_channels = get_channel_ids_with_message(guild_id)
     if channel_id not in tracked_channels:
         logger.warning("The channel is not being tracked by the bot! Sending error message...")
@@ -84,10 +86,21 @@ async def authenticate(ctx):
         logger.info("It seems like the channel's lock is not active! Sending error...")
         await ctx.send(
             embed=generate_error_embed("The channel is not being tracked by me!",
-                                 "It seems like this channel's does not have an active lock currently.")
+                                 "It seems like this channel's does not have an active lock currently."),
+            delete_after=30
         )
         return
     logger.info("Found an enabled lock.")
+    #Check if the user has authenticated
+    if user_id in enabled_lock["authenticated_users"]:
+        logger.info("User has already authenticated! Sending error message...")
+        await ctx.send(
+            embed=generate_error_embed(
+                "You have already authenticated",
+                f"Hey {ctx.author.mention}, you have already authenticated and I have awarded you the roles."
+            ),
+            delete_after=60
+        )
     #Now, send the user a DM requesting the password.
     logger.info("Sending user a DM...")
     try:
@@ -117,7 +130,7 @@ async def authenticate(ctx):
     try:
         response = await bot.wait_for("message", check=is_dm_from_author, timeout=60)
     except asyncio.TimeoutError:
-        logger.info("User didn't responsd!")
+        logger.info("User didn't respond!")
         await ctx.author.send(
             embed=generate_error_embed("You were too slow, mate!",
                                        "You didn't send the password to authenticate with in time. Now, don't worry! Go back to the channel and then write `?a` again, and you will get a new chance from me to authenticate. Cheers!")
@@ -125,6 +138,10 @@ async def authenticate(ctx):
         return
     logger.info("Got a response! Using that as password...")
     user_entered_password = response.content
+    #Delete password message
+    logger.info("Deleting password message...")
+    await response.delete()
+    logger.info("Password message deleted.")
     logger.info("Found an enabled lock, checking password...")
     #Get the password for the lock
     lock_password = enabled_lock["password"]
@@ -139,9 +156,10 @@ async def authenticate(ctx):
         await ctx.author.send(
             embed=error_embed
         )
+        error_embed.set_footer(text="You may try again in 30 seconds. This message will be automatically be deleted in 2 minutes.")
         await ctx.send(
             embed=error_embed,
-            delete_after=30
+            delete_after=120
         )
         return
     else:
@@ -157,15 +175,25 @@ async def authenticate(ctx):
             logger.info("Awarding role...")
             await ctx.author.add_roles(role)
             logger.info("Role awarded.")
+        #Add user to list of authenticated users
+        guild_configuration = get_guild_configuration(guild_id)
+        if "authenticated_users" not in enabled_lock:
+            enabled_lock["authenticated_users"] = []
+        enabled_lock["authenticated_users"].append(user_id)
+        guild_configuration["enabled_locks"][guild_configuration["enabled_locks"].index(enabled_lock)] = enabled_lock
+        logger.info("Updating guild configuration...")
+        update_guild_config(guild_id, guild_configuration)
+        logger.info("Guild configuration updated.")
         final_embed = Embed(
             title="✅ Oh yeah, that's correct!",
             description=f"I have now let ya in, {ctx.author.mention}! I awarded you some roles since you enterred the correct password.",
             color=DEFAULT_COMMAND_COLOR
         )
-        logger.info("Sending final embed to channel...")
-        await ctx.send(embed=final_embed)
         logger.info("Sending final embed to user...")
         await ctx.author.send(embed=final_embed)
+        final_embed.set_footer(text="This message will automatically be deleted in 2 minutes.")
+        logger.info("Sending final embed to channel...")
+        await ctx.send(embed=final_embed, delete_after=120)
 
 @bot.command(aliases=["al"])
 async def add_lock(ctx):
@@ -327,12 +355,87 @@ async def add_lock(ctx):
     await ctx.send(embed=confirmation_message)
     logger.info("Configuration message sent.")
 
+@bot.command(aliases=["rl"])
+async def remove_lock(ctx):
+    '''The remove_lock command can be used to remove a lock from the channel.
+    It permanently deletes the lock from the database.'''
+    logger.info("Got a request to remove a lock!")
+    #Check if the author is the server admin
+    if not ctx.author.guild_permissions.administrator:
+        logger.info("The user is not an admin!")
+        await ctx.send(embed=generate_error_embed(
+            "You are not a server admin!",
+            "Currently, only server admins can create lock messages."
+        ))
+        return
+    #Get guild ID and channel ID and find lock
+    guild_id = str(ctx.guild.id)
+    channel_id = ctx.channel.id
+    lock_for_channel = get_lock_for_channel_id(guild_id, channel_id, return_only_enabled_locks=False)
+    if lock_for_channel == None:
+        logger.info("No lock found! Sending error message...")
+        await ctx.send(
+            embed=generate_error_embed(
+                "No lock found for channel",
+                "I couldn't find an enabled lock. Make sure that you type this command in the same channel where I have sent a message asking users to authenticate. Cheers!"
+            )
+        )
+        return
+    logger.info("Lock found! Removing from configuration...")
+    #Remove lock from configuration
+    guild_configuration = get_guild_configuration(guild_id)
+    guild_configuration["enabled_locks"].remove(lock_for_channel)
+    logger.info("Enabled lock removed in memory. Removing lock message...")
+    #Remove the lock message sent by the bot
+    lock_message = await ctx.fetch_message(lock_for_channel["sent_information_message"]["id"])
+    logger.info("Message retrieved. Removing...")
+    await lock_message.delete()
+    logger.info("Message deleted. Updating configuration...")
+    update_guild_config(guild_id, guild_configuration)
+    logger.info("Guild configuration updated. Sending confirmation message...")
+    final_message = Embed(
+        title="✅ Lock removed",
+        description="I'm no longer tracking the password lock associated with the message I sent in this channel earlier.",
+        color=DEFAULT_COMMAND_COLOR
+    )
+    final_message.set_footer(text="Want to create a new lock? Use the ?al//?add_lock command.")
+    await ctx.send(embed=final_message)
+    logger.info("Message sent and lock removed. All good!")
+
+@bot.command()
+async def help(ctx):
+    '''The help command. This command is hard-coded, because the bot is simple to use and doesn't have that many commands.'''
+    logger.info("Got a request to the help message! Sending...")
+    final_message = Embed(
+        title="Help",
+        description="I'm PolicemanBot, and I can help you to lock your Discord servers with a password, by giving out certain roles to people who know the right password.",
+        color=DEFAULT_COMMAND_COLOR
+    )
+    final_message.add_field(name="Lock a set of roles with a password", value="Type `?al` or `?add_lock` in any channel to get presented with an interactive process.", inline=False)
+    final_message.add_field(name="Remove an existing lock", value="Type `?rm` or `?remove_lock` in the channel where I sent the message about an active lock to remove it.", inline=False)
+    final_message.add_field(name="Unlocking", value="Type `?a` or `?authenticate` in the channel where I sent the message about an active lock to get a private message asking you for the password.", inline=False)
+    final_message.add_field(name="Permissions", value="Every server member can try to authenticate, but only admins can delete or add locks.", inline=False)
+    final_message.add_field(name="Invite link", value="Invite me to your own server using the `?il` or `?invite_link` command.", inline=False)
+    await ctx.send(embed=final_message)
+
+@bot.command(aliases=["il"])
+async def invite_link(ctx):
+    '''Invite link command. Send an invite link to the bot to a channel.'''
+    logger.info("Got a request to the invite link command!")
+    final_message = Embed(
+        title="Invite link",
+        description="Here is an invite link to the bot!",
+        color=DEFAULT_COMMAND_COLOR
+    )
+    final_message.add_field(name="Link:", value=BOT_INVITE_LINK, inline=False)
+    await ctx.send(embed=final_message)
+
 #Events
 @bot.event
 async def on_ready(*args):
     logger.info("Bot is ready!")
     logger.info("Changing presence...")
-    await bot.change_presence(activity=Game(name="PolicemanBot - lock any server with a password!"))
+    await bot.change_presence(activity=Game(name=f"{BOT_COMMAND_PREFIX}help | PolicemanBot - lock any server with a password!"))
 
 @bot.event
 async def on_command_error(ctx, error):
@@ -344,7 +447,7 @@ async def on_command_error(ctx, error):
         await ctx.send(
             embed=generate_error_embed(
                 "Command on cooldown",
-                f"Sorry for the inconvenience, {ctx.author.mention}, but this command is on cooldown. You may use it again in {round(error.retry_after,2)} seconds."
+                f"Sorry about the inconvenience, {ctx.author.mention}, but this command is on cooldown. You may use it again in {round(error.retry_after,2)} seconds."
             )
         )
     elif isinstance(error, commands.CommandNotFound):
@@ -353,7 +456,9 @@ async def on_command_error(ctx, error):
         logger.critical("The exception was unhandled!")
         await ctx.send(
             embed=generate_error_embed("An unknown error occurred!",
-                                       "Sorry. Maybe I need a lunch break. Try again later!")
+                                       "Sorry. Maybe I need a lunch break. Try again later! If this error persists, report it to the bot author: `sötpotatis!#5212`\nThis could be a permission error - make sure I have permissions to manage and send messages!")
         )
+
+#Logg in and start the bot
 logger.info("Logging in bot...")
 bot.run(BOT_TOKEN)
