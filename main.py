@@ -63,9 +63,13 @@ async def authenticate(ctx):
     This might seem tedious, but if you think about it, it is a great way to prevent bruteforcing since it adds an extra step for someone
     that would attempt to bruteforce.'''
     logger.info("Got a request to authenticate!")
-    logger.info("Deleting original message...")
-    await ctx.message.delete()
-    logger.info("Original message deleted.")
+    logger.info("Attempting to delete original message...")
+    #Message deletion can be tricky with permission management. And the deletion of the original message is nice but not mandatory - so we can move on if it fails!
+    try:
+        await ctx.message.delete()
+        logger.info("Original message deleted.")
+    except Exception as e:
+        logger.warning("Original message could not be deleted!", exc_info=True)
     #First, validate if the channel actually has a lock enabled
     guild_id = str(ctx.guild.id)
     channel_id = ctx.channel.id
@@ -92,7 +96,7 @@ async def authenticate(ctx):
         return
     logger.info("Found an enabled lock.")
     #Check if the user has authenticated
-    if user_id in enabled_lock["authenticated_users"]:
+    if "authenticated_users" in enabled_lock and user_id in enabled_lock["authenticated_users"]:
         logger.info("User has already authenticated! Sending error message...")
         await ctx.send(
             embed=generate_error_embed(
