@@ -73,7 +73,7 @@ async def authenticate(ctx):
     #First, validate if the channel actually has a lock enabled
     guild_id = str(ctx.guild.id)
     channel_id = ctx.channel.id
-    user_id = ctx.user.id
+    user_id = ctx.author.id
     tracked_channels = get_channel_ids_with_message(guild_id)
     if channel_id not in tracked_channels:
         logger.warning("The channel is not being tracked by the bot! Sending error message...")
