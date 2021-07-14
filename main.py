@@ -177,10 +177,11 @@ async def authenticate(ctx):
             logger.info("Role awarded.")
         #Add user to list of authenticated users
         guild_configuration = get_guild_configuration(guild_id)
+        enabled_lock_index = guild_configuration["enabled_locks"].index(enabled_lock) #Get index of enabled lock in configuration
         if "authenticated_users" not in enabled_lock:
             enabled_lock["authenticated_users"] = []
         enabled_lock["authenticated_users"].append(user_id)
-        guild_configuration["enabled_locks"][guild_configuration["enabled_locks"].index(enabled_lock)] = enabled_lock
+        guild_configuration["enabled_locks"][enabled_lock_index] = enabled_lock
         logger.info("Updating guild configuration...")
         update_guild_config(guild_id, guild_configuration)
         logger.info("Guild configuration updated.")

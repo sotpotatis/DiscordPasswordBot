@@ -107,11 +107,7 @@ def get_lock_for_channel_id(guild_id, channel_id, return_only_enabled_locks=True
     logger.info("Guild configuration retrieved.")
     #Find the locked channel
     for lock in guild_configuration["enabled_locks"]:
-        print("Here!#1")
         if lock["enabled"] or not return_only_enabled_locks:
-            print("Here!#2")
-            print(channel_id)
-            print(lock["channel_id"])
             if lock["channel_id"] == channel_id:
                 logger.info("Found enabled lock! Returning...")
                 return lock
