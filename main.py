@@ -142,10 +142,6 @@ async def authenticate(ctx):
         return
     logger.info("Got a response! Using that as password...")
     user_entered_password = response.content
-    #Delete password message
-    logger.info("Deleting password message...")
-    await response.delete()
-    logger.info("Password message deleted.")
     logger.info("Found an enabled lock, checking password...")
     #Get the password for the lock
     lock_password = enabled_lock["password"]
